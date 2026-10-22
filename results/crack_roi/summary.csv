@@ -1,0 +1,5 @@
+image,roi_x,roi_y,roi_width,roi_height,otsu_threshold,gap_candidates
+IMG_8506 2.png,1239,190,1336,295,184.0,1
+IMG_8510.png,1008,177,975,317,167.0,1
+IMG_8511.png,510,253,1249,298,175.0,0
+IMG_8512.png,439,221,987,332,172.0,1
