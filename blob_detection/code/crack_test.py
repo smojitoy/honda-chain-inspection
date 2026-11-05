@@ -22,41 +22,77 @@ MAX_WIDTH_FRACTION = 0.20
 MIN_HEIGHT_WIDTH_RATIO = 1.5
 
 
-def select_roi(image):
-    """Select on a smaller preview, then map back to original pixels."""
-    height, width = image.shape[:2]
-    scale = min(1.0, 1200 / width, 750 / height)
 
-    preview = cv2.resize(
-        image, None, fx=scale, fy=scale,
-        interpolation=cv2.INTER_AREA
+def auto_select_roi(image):
+    """Automatically detect a horizontal metal bar ROI."""
+    H, W = image.shape[:2]
+
+    # Ignore the outer image border
+    mx = round(W * 0.035)
+    my = round(H * 0.055)
+
+    cropped = image[my:H-my, mx:W-mx]
+
+    # Grayscale + Gaussian blur
+    gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Otsu threshold: bright metal becomes white
+    _, mask = cv2.threshold(
+        blurred, 0, 255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )
 
-    window = "Select metal bar: ENTER confirm, C cancel"
-    selection = cv2.selectROI(
-        window, preview,
-        showCrosshair=True,
-        fromCenter=False
+    # Connect nearby bright metal regions
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (max(15, round(W * 0.024)),
+         max(3, round(H * 0.026)))
     )
-    cv2.destroyAllWindows()
 
-    px, py, pw, ph = selection
-    if pw == 0 or ph == 0:
+    mask = cv2.morphologyEx(
+        mask, cv2.MORPH_CLOSE, kernel
+    )
+
+    # Find object contours
+    contours, _ = cv2.findContours(
+        mask,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    candidates = []
+
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+
+        # Prefer long horizontal objects
+        if w > W * 0.4 and w / max(h, 1) > 3:
+            candidates.append(
+                (cv2.contourArea(contour), x, y, w, h)
+            )
+
+    if not candidates:
         return None
 
-    preview_h, preview_w = preview.shape[:2]
-    sx = width / preview_w
-    sy = height / preview_h
+    # Choose the largest suitable contour
+    _, x, y, w, h = max(candidates)
 
-    x = max(0, int(round(px * sx)))
-    y = max(0, int(round(py * sy)))
-    x2 = min(width, int(round((px + pw) * sx)))
-    y2 = min(height, int(round((py + ph) * sy)))
+    # Map back to the original image
+    x += mx
+    y += my
 
-    if x2 <= x or y2 <= y:
-        return None
+    # Move inside the metal to exclude background
+    pad_x = int(w * 0.03)
+    pad_y = int(h * 0.20)
 
-    return x, y, x2 - x, y2 - y
+    x += pad_x
+    y += pad_y
+    w -= 2 * pad_x
+    h -= 2 * pad_y
+
+    return (x, y, w, h)
+
 
 
 photos = sorted(
@@ -79,7 +115,8 @@ for photo in photos:
     print("Select a horizontal strip INSIDE the metal bar.")
     print("Include the gap and metal on both sides; exclude the background.")
 
-    selection = select_roi(image)
+    selection = auto_select_roi(image)
+    
     if selection is None:
         print("Skipped.")
         continue
@@ -125,7 +162,16 @@ for photo in photos:
 
     # Label 0 is the binary background.
     for label in range(1, count):
+
         bx, by, bw, bh, area = stats[label]
+        # Ignore components touching or near the ROI boundaries
+        EDGE_MARGIN = 0.03
+
+        if (
+            bx <= w * EDGE_MARGIN
+            or bx + bw >= w * (1 - EDGE_MARGIN)
+        ):
+            continue
 
         height_fraction = bh / h
         width_fraction = bw / w
